@@ -4,6 +4,7 @@ import tensorflow as tf
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 from sklearn.preprocessing import StandardScaler
+from sklearn.semi_supervised import LabelPropagation
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tensorflow.keras.models import Sequential
@@ -25,65 +26,62 @@ def build_mlp_attention_model(input_shape, num_classes):
     return model
 
 
-def get_high_confidence_predictions(model, X_unlabeled, confidence_threshold=0.8):
-    probabilities = model.predict(X_unlabeled)
-    max_probs = np.max(probabilities, axis=1)
-    predictions = np.argmax(probabilities, axis=1)
-    confident_indices = np.where(max_probs >= confidence_threshold)[0]
-    return confident_indices, predictions[confident_indices]
+def label_propagation_training(X_labeled, y_labeled, X_unlabeled, kernel='rbf', gamma=10):
+    # Préparation des données
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_labeled, y_labeled, test_size=0.2, random_state=42, stratify=y_labeled
+    )
 
-
-def self_training_with_external_unlabeled(X_labeled, y_labeled, X_unlabeled, n_iterations=5, confidence_threshold=0.8):
-    # Séparation des données étiquetées en ensembles d'entraînement et de test
-    X_train, X_test, y_train, y_test = train_test_split(X_labeled, y_labeled, test_size=0.2, random_state=42,
-                                                        stratify=y_labeled)
-
-    # Initialisation et ajustement du scaler sur les données d'entraînement
+    # Standardisation des données
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
     X_unlabeled_scaled = scaler.transform(X_unlabeled)
 
-    # Création du modèle
-    model = build_mlp_attention_model(X_train_scaled.shape[1], len(np.unique(y_labeled)))
+    # Combinaison des données étiquetées et non étiquetées
+    X_combined = np.vstack((X_train_scaled, X_unlabeled_scaled))
 
-    # Variables pour suivre les données non étiquetées restantes
-    remaining_unlabeled = X_unlabeled_scaled.copy()
-    X_current_labeled = X_train_scaled.copy()
-    y_current_labeled = y_train.copy()
+    # Préparation des étiquettes (-1 pour les données non étiquetées)
+    y_combined = np.full(X_combined.shape[0], -1)
+    y_combined[:len(y_train)] = y_train
 
-    # Boucle de self-training
-    for iteration in range(n_iterations):
-        print(f"\nItération {iteration + 1}/{n_iterations}")
-        print("-" * 50)
+    # Création et entraînement du modèle de propagation d'étiquettes
+    label_prop_model = LabelPropagation(
+        kernel=kernel,
+        gamma=gamma,
+        n_jobs=-1,
+        max_iter=100
+    )
 
-        # Entraînement sur les données étiquetées actuelles
-        model.fit(X_current_labeled, y_current_labeled, epochs=10, batch_size=32, verbose=0)
+    print("Démarrage de la propagation d'étiquettes...")
+    label_prop_model.fit(X_combined, y_combined)
 
-        # Prédiction sur les données non étiquetées restantes
-        confident_indices, confident_predictions = get_high_confidence_predictions(
-            model, remaining_unlabeled, confidence_threshold
-        )
+    # Récupération des étiquettes propagées
+    propagated_labels = label_prop_model.transduction_
 
-        if len(confident_indices) == 0:
-            print("Aucune prédiction avec une confiance suffisante trouvée.")
-            break
+    # Séparation des données nouvellement étiquetées
+    newly_labeled = propagated_labels[len(y_train):]
+    X_newly_labeled = X_unlabeled_scaled
 
-        # Ajout des nouvelles données étiquetées
-        X_new_labeled = remaining_unlabeled[confident_indices]
-        y_new_labeled = confident_predictions
+    # Combinaison des données d'origine et nouvellement étiquetées
+    X_final_labeled = np.vstack((X_train_scaled, X_newly_labeled))
+    y_final_labeled = np.concatenate((y_train, newly_labeled))
 
-        X_current_labeled = np.vstack((X_current_labeled, X_new_labeled))
-        y_current_labeled = np.concatenate((y_current_labeled, y_new_labeled))
+    # Entraînement du modèle neuronal final avec toutes les données étiquetées
+    final_model = build_mlp_attention_model(X_train_scaled.shape[1], len(np.unique(y_labeled)))
+    final_model.fit(
+        X_final_labeled,
+        y_final_labeled,
+        epochs=10,
+        batch_size=32,
+        verbose=1
+    )
 
-        # Mise à jour des données non étiquetées restantes
-        remaining_unlabeled = np.delete(remaining_unlabeled, confident_indices, axis=0)
+    print(f"\nNombre total d'exemples étiquetés après propagation: {len(y_final_labeled)}")
+    print(f"Dont {len(y_train)} exemples initialement étiquetés")
+    print(f"Et {len(newly_labeled)} exemples nouvellement étiquetés")
 
-        print(f"Ajout de {len(confident_indices)} nouveaux exemples étiquetés")
-        print(f"Nombre total d'exemples étiquetés: {len(y_current_labeled)}")
-        print(f"Nombre d'exemples non étiquetés restants: {len(remaining_unlabeled)}")
-
-    return model, scaler, X_current_labeled, y_current_labeled, X_test_scaled, y_test
+    return final_model, scaler, X_final_labeled, y_final_labeled, X_test_scaled, y_test
 
 
 def evaluate_with_cross_validation(X, y, input_shape, num_classes, model, class_names, n_splits=5):
@@ -101,7 +99,9 @@ def evaluate_with_cross_validation(X, y, input_shape, num_classes, model, class_
 
         # Création d'une nouvelle instance du modèle
         model_fold = tf.keras.models.clone_model(model)
-        model_fold.compile(optimizer=Adam(learning_rate=0.001), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+        model_fold.compile(optimizer=Adam(learning_rate=0.001),
+                           loss='sparse_categorical_crossentropy',
+                           metrics=['accuracy'])
 
         # Entraînement du modèle sur le pli d'entraînement
         model_fold.fit(X_train_fold, y_train_fold, epochs=10, batch_size=32, verbose=0)
@@ -143,7 +143,7 @@ def evaluate_with_cross_validation(X, y, input_shape, num_classes, model, class_
     axes[len(cms) + 1].set_title(f'Matrice de confusion agrégée (en %) (Acc: {np.mean(accuracies):.3f})')
 
     plt.tight_layout()
-    plt.savefig('cv_confusion_matrices_mlp_attention_self.png')
+    plt.savefig('cv_confusion_matrices_label_propagation.png')
     plt.close(fig)
 
     return accuracies, cm_aggregated, cm_aggregated_percent
@@ -159,14 +159,19 @@ with open('reduced_unlabeled_cell_dataset.pkl', 'rb') as file:
     unlabeled_data = pickle.load(file)
 X_unlabeled = unlabeled_data['X_unlabeled']
 
-# Exécution de l'auto-formation
-final_model, scaler, X_final, y_final, X_test_scaled, y_test = self_training_with_external_unlabeled(
-    X_labeled, y_labeled, X_unlabeled, n_iterations=5, confidence_threshold=0.8
+# Exécution de la propagation d'étiquettes
+final_model, scaler, X_final, y_final, X_test_scaled, y_test = label_propagation_training(
+    X_labeled, y_labeled, X_unlabeled, kernel='rbf', gamma=10
 )
 
-# Validation croisée sur les données étiquetées de base
+# Évaluation avec validation croisée
 accuracies, cm_aggregated, cm_aggregated_percentage = evaluate_with_cross_validation(
-    X_final, y_final, input_shape=X_labeled.shape[1], num_classes=len(class_names), model=final_model, class_names=class_names)
+    X_labeled, y_labeled,
+    input_shape=X_labeled.shape[1],
+    num_classes=len(class_names),
+    model=final_model,
+    class_names=class_names
+)
 
 # Évaluation finale sur l'ensemble de test
 print("\nPerformances finales sur l'ensemble de test :")

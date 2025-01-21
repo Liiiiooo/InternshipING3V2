@@ -22,16 +22,11 @@ class_names = data['class_names']
 # Split des données
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
-# Standardisation
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
-
 # Définition du modèle avec une couche d'attention avant le MLP
-input_layer = Input(shape=(X_train_scaled.shape[1],))  # Entrée avec le nombre de features
+input_layer = Input(shape=(X_train.shape[1],))  # Entrée avec le nombre de features
 
 # Reshape des entrées pour utiliser l'attention
-reshaped_input = Reshape((X_train_scaled.shape[1], 1))(input_layer)
+reshaped_input = Reshape((X_train.shape[1], 1))(input_layer)
 
 # Couche d'attention
 attention = Attention()([reshaped_input, reshaped_input, reshaped_input])
@@ -70,7 +65,8 @@ def plot_cv_confusion_matrices(model, X, y, cv, class_names):
     for idx, (train_idx, val_idx) in enumerate(cv.split(X, y)):
         # Création d'une nouvelle instance du modèle
         model_fold = tf.keras.models.clone_model(model)
-        model_fold.compile(optimizer=Adam(learning_rate=0.001), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+        model_fold.compile(optimizer=Adam(learning_rate=0.001), loss='sparse_categorical_crossentropy',
+                           metrics=['accuracy'])
 
         # Split des données
         X_train_fold = X[train_idx]
@@ -78,11 +74,16 @@ def plot_cv_confusion_matrices(model, X, y, cv, class_names):
         X_val_fold = X[val_idx]
         y_val_fold = y[val_idx]
 
+        # Standardisation spécifique à chaque pli
+        scaler_fold = StandardScaler()
+        X_train_fold_scaled = scaler_fold.fit_transform(X_train_fold)
+        X_val_fold_scaled = scaler_fold.transform(X_val_fold)
+
         # Entraînement du modèle
-        model_fold.fit(X_train_fold, y_train_fold, epochs=10, batch_size=32, verbose=0)
+        model_fold.fit(X_train_fold_scaled, y_train_fold, epochs=10, batch_size=32, verbose=0)
 
         # Prédictions
-        y_pred_fold = np.argmax(model_fold.predict(X_val_fold), axis=1)
+        y_pred_fold = np.argmax(model_fold.predict(X_val_fold_scaled), axis=1)
 
         # Calcul de l'accuracy
         acc = accuracy_score(y_val_fold, y_pred_fold)
@@ -123,12 +124,17 @@ def plot_cv_confusion_matrices(model, X, y, cv, class_names):
     return cms, cm_aggregated, cm_percentage, accuracies
 
 
-cms, cm_aggregated, cm_percentage, accuracies = plot_cv_confusion_matrices(model, X_train_scaled, y_train, cv, class_names)
+cms, cm_aggregated, cm_percentage, accuracies = plot_cv_confusion_matrices(model, X_train, y_train, cv, class_names)
+
+# Scaler final ajusté sur tout l'ensemble d'entraînement
+scaler_final = StandardScaler()
+X_train_scaled = scaler_final.fit_transform(X_train)  # Ajuste et transforme l'ensemble d'entraînement
+X_test_scaled = scaler_final.transform(X_test)  # Transforme l'ensemble de test avec le même scaler
 
 # Entraînement final sur tout l'ensemble d'entraînement
 model.fit(X_train_scaled, y_train, epochs=10, batch_size=32)
 
-# Évaluation sur l'ensemble de test
+# Évaluation finale sur l'ensemble de test
 y_pred_test = np.argmax(model.predict(X_test_scaled), axis=1)
 print("\nPerformances sur l'ensemble de test:")
 print("-" * 50)
