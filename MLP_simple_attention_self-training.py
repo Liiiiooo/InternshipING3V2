@@ -143,7 +143,7 @@ def evaluate_with_cross_validation(X, y, input_shape, num_classes, model, class_
     axes[len(cms) + 1].set_title(f'Matrice de confusion agrégée (en %) (Acc: {np.mean(accuracies):.3f})')
 
     plt.tight_layout()
-    plt.savefig('cv_confusion_matrices_mlp_attention_self.png')
+    plt.savefig('cv_confusion_matrices_mlp_attention_self2.png')
     plt.close(fig)
 
     return accuracies, cm_aggregated, cm_aggregated_percent
