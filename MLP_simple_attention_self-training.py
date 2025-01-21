@@ -166,7 +166,7 @@ final_model, scaler, X_final, y_final, X_test_scaled, y_test = self_training_wit
 
 # Validation croisée sur les données étiquetées de base
 accuracies, cm_aggregated, cm_aggregated_percentage = evaluate_with_cross_validation(
-    X_final, y_final, input_shape=X_labeled.shape[1], num_classes=len(class_names), model=final_model, class_names=class_names)
+    X_labeled, y_labeled, input_shape=X_labeled.shape[1], num_classes=len(class_names), model=final_model, class_names=class_names)
 
 # Évaluation finale sur l'ensemble de test
 print("\nPerformances finales sur l'ensemble de test :")
