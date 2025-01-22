@@ -19,6 +19,7 @@ def load_and_scale_data():
 
     X_labeled = labeled_data['X']
     y_labeled = labeled_data['y']
+    class_names = labeled_data['class_names']
     X_unlabeled = unlabeled_data['X_unlabeled']
 
     # Découper les données étiquetées en ensembles d'entraînement et de test
@@ -32,7 +33,7 @@ def load_and_scale_data():
     X_test = scaler.transform(X_test)
     X_unlabeled = scaler.transform(X_unlabeled)
 
-    return X_train, X_test, y_train, y_test, X_unlabeled
+    return X_train, X_test, y_train, y_test, X_unlabeled, class_names
 
 
 def iterative_self_training(X_labeled, y_labeled, X_unlabeled, confidence_threshold=0.8, max_iterations=3, min_samples_per_class=10):
@@ -125,7 +126,7 @@ def cross_validate_self_training(X_labeled, y_labeled, X_unlabeled, n_splits=5):
     return results, models
 
 
-def visualize_results(results, n_classes):
+def visualize_results(results, n_classes, class_names):
     """Visualiser les matrices de confusion et les précisions."""
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
     axes = axes.flatten()
@@ -134,13 +135,13 @@ def visualize_results(results, n_classes):
     global_matrix = np.zeros((n_classes, n_classes))
     for i, result in enumerate(results):
         if i < 5:  # Tracer les 5 premiers plis seulement
-            sns.heatmap(result['conf_matrix'], annot=True, fmt='d',
-                        cmap='Blues', ax=axes[i], cbar=False)
+            sns.heatmap(result['conf_matrix'], annot=True, fmt='d', cmap='Blues',
+                        xticklabels=class_names, yticklabels=class_names, ax=axes[i], cbar=False)
             axes[i].set_title(f"Pli {i + 1} (Accuracy : {result['accuracy']:.3f})")
         global_matrix += result['conf_matrix']
 
     # Tracer la matrice globale
-    sns.heatmap(global_matrix, annot=True, fmt='.1f', cmap='Blues',
+    sns.heatmap(global_matrix, annot=True, fmt='.1f', cmap='Blues', xticklabels=class_names, yticklabels=class_names,
                 ax=axes[-1], cbar=True)
     axes[-1].set_title(f"Global (Accuracy moyenne : {np.mean([r['accuracy'] for r in results]):.3f})")
 
@@ -149,7 +150,7 @@ def visualize_results(results, n_classes):
     plt.close()
 
 
-def evaluate_final_performance(y_test, y_pred):
+def evaluate_final_performance(y_test, y_pred, class_names):
     """Évaluer la performance finale avec plusieurs métriques."""
     print("\nPerformance finale sur le jeu de test :")
     print("-" * 50)
@@ -159,7 +160,7 @@ def evaluate_final_performance(y_test, y_pred):
     print("\nMatrice de confusion :")
     conf_mat = confusion_matrix(y_test, y_pred)
     plt.figure(figsize=(10, 8))
-    sns.heatmap(conf_mat, annot=True, fmt='d', cmap='Blues')
+    sns.heatmap(conf_mat, annot=True, fmt='d', cmap='Blues', xticklabels=class_names, yticklabels=class_names,)
     plt.title('Matrice de confusion - Jeu de test')
     plt.savefig('test_confusion_matrix_logistic_self.png')
     plt.close()
@@ -168,10 +169,11 @@ def evaluate_final_performance(y_test, y_pred):
 
 # Exécution principale
 n_neighbors = 5
-X_train, X_test, y_train, y_test, X_unlabeled = load_and_scale_data()
-
+X_train, X_test, y_train, y_test, X_unlabeled, class_names = load_and_scale_data()
 # Validation croisée sur les données d'entraînement
 results, models = cross_validate_self_training(X_train, y_train, X_unlabeled)
+
+visualize_results(results, len(np.unique(y_train)), class_names)
 
 # Sélectionner le dernier modèle cloné
 final_model = models[-1]
@@ -180,4 +182,4 @@ final_model = models[-1]
 y_pred = final_model.predict(X_test)
 
 # Évaluation finale sur le jeu de test
-evaluate_final_performance(y_test, y_pred)
+evaluate_final_performance(y_test, y_pred, class_names)
