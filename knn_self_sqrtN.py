@@ -9,6 +9,16 @@ import seaborn as sns
 import numpy as np
 import pickle
 
+
+def get_dynamic_knn(X_train):
+    n_neighbors = int(np.sqrt(len(X_train)))
+    model = Pipeline([
+        ('scaler', StandardScaler()),
+        ('classifier', KNeighborsClassifier(n_neighbors=max(1, n_neighbors)))
+    ])
+    return model
+
+
 # Chargement des données
 with open('true_formatted_cell_dataset.pkl', 'rb') as f:
     labeled_data = pickle.load(f)
@@ -25,12 +35,6 @@ confidence_threshold = 0.8
 n_folds = 3
 skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
 
-# Initialisation du modèle
-model = Pipeline([
-    ('scaler', StandardScaler()),
-    ('classifier', KNeighborsClassifier(n_neighbors=5))
-])
-
 validation_scores = []
 fold_cms = []
 
@@ -45,13 +49,8 @@ for fold, (train_index, val_index) in enumerate(skf.split(D_a, y_a), 1):
     D_u_current = D_u.copy()
 
     # Initialisation du modèle pour ce pli
-    self_training_model = clone(model)
-
-    # Suivi des données
-    fold_data_info = {
-        'labeled_data_count': [len(D_a_train)],
-        'unlabeled_data_count': [len(D_u_current)]
-    }
+    self_training_model = get_dynamic_knn(D_a_train)
+    self_training_model.fit(D_a_train, y_a_train)
 
     print(f"Données étiquetées initiales : {len(D_a_train)}")
     print(f"Données non étiquetées initiales : {len(D_u_current)}")
@@ -59,9 +58,6 @@ for fold, (train_index, val_index) in enumerate(skf.split(D_a, y_a), 1):
     # Processus d'apprentissage automatique
     for iteration in range(max_iterations):
         print(f"\n--- Itération {iteration + 1} ---")
-
-        # Entraînement du modèle
-        self_training_model.fit(D_a_train, y_a_train)
 
         # Prédictions et confidences
         pseudo_labels = self_training_model.predict(D_u_current)
@@ -76,6 +72,10 @@ for fold, (train_index, val_index) in enumerate(skf.split(D_a, y_a), 1):
         D_a_train = np.concatenate([D_a_train, D_u_high_conf])
         y_a_train = np.concatenate([y_a_train, pseudo_labels_high_conf])
 
+        # Mise à jour du modèle avec k dynamique et réapprentissage
+        self_training_model = get_dynamic_knn(D_a_train)
+        self_training_model.fit(D_a_train, y_a_train)
+
         # Mise à jour des données non étiquetées
         D_u_current = D_u_current[~high_confidence_mask]
 
@@ -83,6 +83,7 @@ for fold, (train_index, val_index) in enumerate(skf.split(D_a, y_a), 1):
         print(f"Données étiquetées après itération : {len(D_a_train)}")
         print(f"Données non étiquetées restantes : {len(D_u_current)}")
         print(f"Données ajoutées à haute confiance : {len(D_u_high_conf)}")
+        print(f"K utilisé : {self_training_model.named_steps['classifier'].n_neighbors}")
 
         # Arrêt si aucune nouvelle donnée n'est ajoutée
         if len(D_u_high_conf) == 0:
@@ -133,5 +134,5 @@ plt.xlabel('Prédictions')
 plt.ylabel('Vraies valeurs')
 
 plt.tight_layout()
-plt.savefig('cv_conf_matrices_knn.png', dpi=300)
+plt.savefig('cv_conf_matrices_knn_sqrtN.png', dpi=300)
 plt.close()
