@@ -6,8 +6,8 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.calibration import CalibratedClassifierCV
 from imblearn.over_sampling import SMOTE
-from sklearn.manifold import TSNE
 from imblearn.under_sampling import RandomUnderSampler
+from sklearn.manifold import TSNE
 from scipy.stats import entropy
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -25,12 +25,13 @@ D_a, y_a, class_names = labeled_data['X'], labeled_data['y'], labeled_data['clas
 D_u = unlabeled_data['X_unlabeled']
 
 # Paramètres
+total_folds = 3  # Validation croisée externe
+internal_folds = 3  # Validation croisée interne
 max_iterations = 5
-batch_size = 200
-confidence_threshold = 0.8
-n_folds = 3
+confidence_thresholds = [0.6, 0.7, 0.8, 0.9]  # Seuils à tester
+skf_external = StratifiedKFold(n_splits=total_folds, shuffle=True, random_state=42)
+skf_internal = StratifiedKFold(n_splits=internal_folds, shuffle=True, random_state=42)
 k = 5
-skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
 
 # Équilibrage des classes
 balancing_strategy = 'undersampling'
@@ -56,13 +57,44 @@ model = Pipeline([
 validation_scores = []
 fold_cms = []
 
-for fold, (train_index, val_index) in enumerate(skf.split(D_a_balanced, y_a_balanced), 1):
+for fold, (train_index, val_index) in enumerate(skf_external.split(D_a_balanced, y_a_balanced), 1):
     print(f"\n--- Fold {fold} ---")
 
     # Séparation des données de validation
     D_a_train, D_a_val = D_a_balanced[train_index], D_a_balanced[val_index]
     y_a_train, y_a_val = y_a_balanced[train_index], y_a_balanced[val_index]
 
+    # Validation croisée interne pour optimiser le seuil
+    best_threshold = 0.8
+    best_score = 0.0
+
+    for threshold in confidence_thresholds:
+        internal_scores = []
+
+        for sub_train_idx, sub_val_idx in skf_internal.split(D_a_train, y_a_train):
+            D_sub_train, D_sub_val = D_a_train[sub_train_idx], D_a_train[sub_val_idx]
+            y_sub_train, y_sub_val = y_a_train[sub_train_idx], y_a_train[sub_val_idx]
+
+            self_training_model = clone(model)
+            self_training_model.fit(D_sub_train, y_sub_train)
+
+            pseudo_labels = self_training_model.predict(D_sub_val)
+            confidences = self_training_model.predict_proba(D_sub_val).max(axis=1)
+
+            selected = confidences > threshold
+            if selected.sum() == 0:
+                continue
+
+            acc = accuracy_score(y_sub_val[selected], pseudo_labels[selected])
+            internal_scores.append(acc)
+            print(acc)
+
+        mean_score = np.mean(internal_scores) if internal_scores else 0
+        if mean_score > best_score:
+            best_score = mean_score
+            best_threshold = threshold
+
+    print(f"Seuil optimal pour ce pli : {best_threshold}")
     # Copie des données non étiquetées
     D_u_current = D_u.copy()
 
@@ -90,7 +122,7 @@ for fold, (train_index, val_index) in enumerate(skf.split(D_a_balanced, y_a_bala
         confidences = self_training_model.predict_proba(D_u_current).max(axis=1)
 
         # Filtrage des données à haute confiance
-        high_confidence_mask = confidences > confidence_threshold
+        high_confidence_mask = confidences > best_threshold
         D_u_high_conf = D_u_current[high_confidence_mask]
         pseudo_labels_high_conf = pseudo_labels[high_confidence_mask]
 
@@ -135,12 +167,12 @@ best_validation_score = validation_scores[best_fold_idx]
 print(f"\nMeilleur score de validation : {best_validation_score} (Pli {best_fold_idx + 1})")
 
 # Récupérer les données et les prédictions pour le meilleur pli
-best_fold_train_index, best_fold_val_index = list(skf.split(D_a_balanced, y_a_balanced))[best_fold_idx]
+best_fold_train_index, best_fold_val_index = list(skf_external.split(D_a_balanced, y_a_balanced))[best_fold_idx]
 D_a_train_best, D_a_val_best = D_a_balanced[best_fold_train_index], D_a_balanced[best_fold_val_index]
 y_a_train_best, y_a_val_best = y_a_balanced[best_fold_train_index], y_a_balanced[best_fold_val_index]
 
-# Initialisation du modèle pour ce pli
 best_self_training_model = clone(model)
+
 # Processus d'apprentissage automatique
 for iteration in range(max_iterations):
     print(f"\n--- Itération {iteration + 1} ---")
@@ -153,7 +185,7 @@ for iteration in range(max_iterations):
     confidences_best = best_self_training_model.predict_proba(D_u).max(axis=1)
 
     # Filtrage des données à haute confiance
-    high_confidence_mask_best = confidences_best > confidence_threshold
+    high_confidence_mask_best = confidences_best > best_threshold
     D_u_high_conf_best = D_u[high_confidence_mask_best]
     pseudo_labels_high_conf_best = pseudo_labels_best[high_confidence_mask_best]
 
@@ -219,6 +251,13 @@ plt.tight_layout()
 plt.savefig('cv_conf_matrices_knn.png', dpi=300)
 plt.close()
 
+# Ajout de la visualisation TSNE globale
+#D_combined = np.concatenate([D_a_balanced, D_u])
+#labels_combined = np.concatenate([y_a_balanced, np.full(len(D_u), -1)])  # -1 pour différencier les pseudo-labels
+
+for idx, class_names in enumerate(class_names):
+    print(f"Index {idx} : Classe : {class_names}")
+
 selected_classes = [0, 1, 2]
 mask = np.isin(y_a_train_best, selected_classes)
 
@@ -232,7 +271,7 @@ D_2D = tsne.fit_transform(D_a_train_best)
 # Création du scatter plot
 plt.figure(figsize=(12, 8))
 sns.scatterplot(x=D_2D[:, 0], y=D_2D[:, 1], hue=y_a_train_best, palette='Set1', legend='full')
-plt.title("t-SNE des données avec pseudo-labels KNN with basic threshold")
+plt.title("t-SNE des données avec pseudo-labels KNN with optimal threshold")
 plt.savefig("tsne_pseudo_labels_global.png", dpi=300)
 plt.close()
 
@@ -243,6 +282,6 @@ D_2D = tsne.fit_transform(D_filtered)
 # Création du scatter plot
 plt.figure(figsize=(12, 8))
 sns.scatterplot(x=D_2D[:, 0], y=D_2D[:, 1], hue=labels_filtered, palette='Set1', legend='full')
-plt.title("t-SNE des données avec pseudo-labels KNN with basic threshold (class 0 to 2")
+plt.title("t-SNE des données avec pseudo-labels KNN with optimal threshold (class 0 to 2")
 plt.savefig("tsne_pseudo_labels_filtered.png", dpi=300)
 plt.close()

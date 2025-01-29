@@ -1,185 +1,248 @@
-import numpy as np
-import pandas as pd
-from sklearn.model_selection import StratifiedKFold, train_test_split
-from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import StratifiedKFold
+from sklearn.base import clone
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
+from sklearn.manifold import TSNE
+from imblearn.over_sampling import SMOTE
+from imblearn.under_sampling import RandomUnderSampler
 import matplotlib.pyplot as plt
 import seaborn as sns
+import numpy as np
 import pickle
-from sklearn.base import clone
 
+# Chargement des données
+with open('true_formatted_cell_dataset.pkl', 'rb') as f:
+    labeled_data = pickle.load(f)
+with open('reduced_unlabeled_cell_dataset.pkl', 'rb') as f:
+    unlabeled_data = pickle.load(f)
 
-def load_and_scale_data():
-    """Charger et normaliser les données étiquetées et non étiquetées, avec un découpage en ensemble de test."""
-    with open('true_formatted_cell_dataset.pkl', 'rb') as f:
-        labeled_data = pickle.load(f)
-    with open('reduced_unlabeled_cell_dataset.pkl', 'rb') as f:
-        unlabeled_data = pickle.load(f)
+# Préparation des données
+D_a, y_a, class_names = labeled_data['X'], labeled_data['y'], labeled_data['class_names']
+D_u = unlabeled_data['X_unlabeled']
 
-    X_labeled = labeled_data['X']
-    y_labeled = labeled_data['y']
-    class_names = labeled_data['class_names']
-    X_unlabeled = unlabeled_data['X_unlabeled']
+# Paramètres
+max_iterations = 5
+confidence_threshold = 0.8
+batch_size = 200
+n_folds = 3
+skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
 
-    # Découper les données étiquetées en ensembles d'entraînement et de test
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_labeled, y_labeled, test_size=0.2, random_state=42, stratify=y_labeled
-    )
+# Équilibrage des classes
+balancing_strategy = 'undersampling'
+if balancing_strategy == 'oversampling':
+    sampler = SMOTE(random_state=42)
+elif balancing_strategy == 'undersampling':
+    sampler = RandomUnderSampler(random_state=42)
 
-    # Normaliser les données pour améliorer la performance du modèle
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_test = scaler.transform(X_test)
-    X_unlabeled = scaler.transform(X_unlabeled)
+D_a_balanced, y_a_balanced = sampler.fit_resample(D_a, y_a)
+print(f"Distribution des classes avant équilibrage : {np.bincount(y_a)}")
+print(f"Distribution des classes après équilibrage : {np.bincount(y_a_balanced)}")
 
-    return X_train, X_test, y_train, y_test, X_unlabeled, class_names
+# Initialisation du modèle
+model = Pipeline([
+    ('scaler', StandardScaler()),
+    ('classifier', LogisticRegression(max_iter=1000, random_state=42))
+])
 
+validation_scores = []
+fold_cms = []
 
-def iterative_self_training(X_labeled, y_labeled, X_unlabeled, confidence_threshold=0.8, max_iterations=3, min_samples_per_class=10):
-    """Effectuer un entraînement itératif auto-supervisé avec vérification de l'équilibre des classes et retourner le modèle entraîné."""
-    model = LogisticRegression(max_iter=1000, random_state=42)
-    X_train_augmented = X_labeled.copy()
-    y_train_augmented = y_labeled.copy()
-    X_remaining = X_unlabeled.copy()
+for fold, (train_index, val_index) in enumerate(skf.split(D_a_balanced, y_a_balanced), 1):
+    print(f"\n--- Fold {fold} ---")
 
+    # Séparation des données de validation
+    D_a_train, D_a_val = D_a_balanced[train_index], D_a_balanced[val_index]
+    y_a_train, y_a_val = y_a_balanced[train_index], y_a_balanced[val_index]
+
+    # Copie des données non étiquetées
+    D_u_current = D_u.copy()
+
+    # Initialisation du modèle pour ce pli
+    self_training_model = clone(model)
+
+    # Suivi des données
+    fold_data_info = {
+        'labeled_data_count': [len(D_a_train)],
+        'unlabeled_data_count': [len(D_u_current)]
+    }
+
+    print(f"Données étiquetées initiales : {len(D_a_train)}")
+    print(f"Données non étiquetées initiales : {len(D_u_current)}")
+
+    # Processus d'apprentissage automatique
     for iteration in range(max_iterations):
-        if len(X_remaining) == 0:
+        print(f"\n--- Itération {iteration + 1} ---")
+
+        # Entraînement du modèle
+        self_training_model.fit(D_a_train, y_a_train)
+
+        # Prédictions et confidences
+        pseudo_labels = self_training_model.predict(D_u_current)
+        confidences = self_training_model.predict_proba(D_u_current).max(axis=1)
+
+        # Filtrage des données à haute confiance
+        high_confidence_mask = confidences > confidence_threshold
+        D_u_high_conf = D_u_current[high_confidence_mask]
+        pseudo_labels_high_conf = pseudo_labels[high_confidence_mask]
+
+        # if len(D_u_high_conf) > batch_size:
+        #    D_u_high_conf = D_u_high_conf[:batch_size]
+        #    pseudo_labels_high_conf = pseudo_labels_high_conf[:batch_size]
+
+        # Mise à jour des données d'entraînement
+        D_a_train = np.concatenate([D_a_train, D_u_high_conf])
+        y_a_train = np.concatenate([y_a_train, pseudo_labels_high_conf])
+
+        # Mise à jour des données non étiquetées
+        D_u_current = D_u_current[~high_confidence_mask]
+
+        # Journalisation
+        print(f"Données étiquetées après itération : {len(D_a_train)}")
+        print(f"Données non étiquetées restantes : {len(D_u_current)}")
+        print(f"Données ajoutées à haute confiance : {len(D_u_high_conf)}")
+
+        # Arrêt si aucune nouvelle donnée n'est ajoutée
+        if len(D_u_high_conf) == 0:
+            print("Aucune nouvelle donnée n'a été ajoutée. Arrêt du self-training.")
             break
 
-        # Entraîner le modèle sur les données étiquetées actuelles
-        model.fit(X_train_augmented, y_train_augmented)
+    # Évaluation du modèle
+    y_val_pred = self_training_model.predict(D_a_val)
+    score = accuracy_score(y_a_val, y_val_pred)
+    validation_scores.append(score)
+    print(f'Score de validation : {score}')
 
-        # Générer des pseudo-étiquettes
-        probs = model.predict_proba(X_remaining)
-        max_probs = np.max(probs, axis=1)
-        pseudo_labels = model.predict(X_remaining)
+    # Matrice de confusion
+    cm = confusion_matrix(y_a_val, y_val_pred)
+    fold_cms.append(cm)
 
-        # Filtrer les prédictions confiantes
-        confident_idx = max_probs >= confidence_threshold
+# Résultats finaux
+print(f"Scores de validation : {validation_scores}")
+print(f"Score moyen : {np.mean(validation_scores)}")
 
-        if not any(confident_idx):
-            break
+# Trouver l'indice du pli avec le meilleur score de validation
+best_fold_idx = np.argmax(validation_scores)
+best_validation_score = validation_scores[best_fold_idx]
+print(f"\nMeilleur score de validation : {best_validation_score} (Pli {best_fold_idx + 1})")
 
-        # Vérifier la distribution des classes
-        new_samples = {}
-        for class_label in np.unique(y_labeled):
-            class_idx = (pseudo_labels == class_label) & confident_idx
-            if sum(class_idx) >= min_samples_per_class:
-                new_samples[class_label] = class_idx
+# Récupérer les données et les prédictions pour le meilleur pli
+best_fold_train_index, best_fold_val_index = list(skf.split(D_a_balanced, y_a_balanced))[best_fold_idx]
+D_a_train_best, D_a_val_best = D_a_balanced[best_fold_train_index], D_a_balanced[best_fold_val_index]
+y_a_train_best, y_a_val_best = y_a_balanced[best_fold_train_index], y_a_balanced[best_fold_val_index]
 
-        if not new_samples:
-            break
+best_self_training_model = clone(model)
 
-        # Ajouter les nouveaux échantillons aux données d'entraînement
-        mask = np.zeros(len(X_remaining), dtype=bool)
-        for class_idx in new_samples.values():
-            mask |= class_idx
+# Processus d'apprentissage automatique
+for iteration in range(max_iterations):
+    print(f"\n--- Itération {iteration + 1} ---")
 
-        X_train_augmented = np.vstack((X_train_augmented, X_remaining[mask]))
-        y_train_augmented = np.concatenate((y_train_augmented, pseudo_labels[mask]))
-        X_remaining = X_remaining[~mask]
+    # Entraînement du modèle
+    best_self_training_model.fit(D_a_train_best, y_a_train_best)
 
-    return model
+    # Prédictions et confidences
+    pseudo_labels_best = best_self_training_model.predict(D_u)
+    confidences_best = best_self_training_model.predict_proba(D_u).max(axis=1)
+
+    # Filtrage des données à haute confiance
+    high_confidence_mask_best = confidences_best > confidence_threshold
+    D_u_high_conf_best = D_u[high_confidence_mask_best]
+    pseudo_labels_high_conf_best = pseudo_labels_best[high_confidence_mask_best]
+
+    # if len(D_u_high_conf_best) > batch_size:
+    #    D_u_high_conf_best = D_u_high_conf_best[:batch_size]
+    #    pseudo_labels_high_conf_best = pseudo_labels_high_conf_best[:batch_size]
+
+    # Mise à jour des données d'entraînement
+    D_a_train_best = np.concatenate([D_a_train_best, D_u_high_conf_best])
+    y_a_train_best = np.concatenate([y_a_train_best, pseudo_labels_high_conf_best])
+
+    # Mise à jour des données non étiquetées
+    D_u = D_u[~high_confidence_mask_best]
+
+    # Journalisation
+    print(f"Données étiquetées après itération : {len(D_a_train_best)}")
+    print(f"Données non étiquetées restantes : {len(D_u)}")
+    print(f"Données ajoutées à haute confiance : {len(D_u_high_conf_best)}")
+
+    # Arrêt si aucune nouvelle donnée n'est ajoutée
+    if len(D_u_high_conf_best) == 0:
+        print("Aucune nouvelle donnée n'a été ajoutée. Arrêt du self-training.")
+        break
+
+# Prédictions du modèle sur les données de validation
+y_val_pred_best = best_self_training_model.predict(D_a_val_best)
+
+# Affichage du classification_report pour le meilleur pli
+report = classification_report(y_a_val_best, y_val_pred_best, target_names=class_names)
+print("\nClassification Report pour le meilleur pli :")
+print(report)
+
+# Visualisation des matrices de confusion
+plt.figure(figsize=(20, 15))
+
+for fold, cm in enumerate(fold_cms, 1):
+    plt.subplot(2, 3, fold)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=class_names, yticklabels=class_names)
+    plt.title(f'Matrice de confusion - Pli {fold}')
+    plt.xlabel('Prédictions')
+    plt.ylabel('Vraies valeurs')
+
+# Matrice de confusion agrégée (comptages bruts)
+plt.subplot(2, 3, 4)
+total_cm = np.sum(fold_cms, axis=0)
+sns.heatmap(total_cm, annot=True, fmt='d', cmap='Blues',
+            xticklabels=class_names, yticklabels=class_names)
+plt.title('Matrice de confusion agrégée (Comptages bruts)')
+plt.xlabel('Prédictions')
+plt.ylabel('Vraies valeurs')
+
+# Matrice de confusion agrégée (pourcentages)
+plt.subplot(2, 3, 5)
+total_cm_percent = total_cm.astype('float') / total_cm.sum(axis=1)[:, np.newaxis] * 100
+sns.heatmap(total_cm_percent, annot=True, fmt='.1f', cmap='Blues',
+            xticklabels=class_names, yticklabels=class_names)
+plt.title('Matrice de confusion agrégée (Pourcentages)')
+plt.xlabel('Prédictions')
+plt.ylabel('Vraies valeurs')
+
+plt.tight_layout()
+plt.savefig('cv_conf_matrices_logreg.png', dpi=300)
+plt.close()
+
+# Ajout de la visualisation TSNE globale
+#D_combined = np.concatenate([D_a_balanced, D_u])
+#labels_combined = np.concatenate([y_a_balanced, np.full(len(D_u), -1)])  # -1 pour différencier les pseudo-labels
+
+selected_classes = [0, 1, 2]
+mask = np.isin(y_a_train_best, selected_classes)
+
+D_filtered = D_a_train_best[mask]
+labels_filtered = y_a_train_best[mask]
+
+# Réduction de dimension avec TSNE
+tsne = TSNE(n_components=2, random_state=42)
+D_2D = tsne.fit_transform(D_a_train_best)
+
+# Création du scatter plot
+plt.figure(figsize=(12, 8))
+sns.scatterplot(x=D_2D[:, 0], y=D_2D[:, 1], hue=y_a_train_best, palette='Set1', legend='full')
+plt.title("t-SNE des données avec pseudo-labels LOGREG with basic threshold")
+plt.savefig("tsne_pseudo_labels_global.png", dpi=300)
+plt.close()
+
+# Réduction de dimension avec TSNE
+tsne = TSNE(n_components=2, random_state=42)
+D_2D = tsne.fit_transform(D_filtered)
+
+# Création du scatter plot
+plt.figure(figsize=(12, 8))
+sns.scatterplot(x=D_2D[:, 0], y=D_2D[:, 1], hue=labels_filtered, palette='Set1', legend='full')
+plt.title("t-SNE des données avec pseudo-labels LOGREG with basic threshold (class 0 to 2")
+plt.savefig("tsne_pseudo_labels_filtered.png", dpi=300)
+plt.close()
 
 
-def cross_validate_self_training(X_labeled, y_labeled, X_unlabeled, n_splits=5):
-    """Effectuer une validation croisée sur les données étiquetées de base après un self-training sur les données étiquetées et non étiquetées."""
-    # Faire le self-training avant la validation croisée
-    model = iterative_self_training(
-        X_labeled, y_labeled, X_unlabeled
-    )
 
-    # Validation croisée avec les données étiquetées de base
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-    results = []
-    models = []  # Stocker les modèles pour chaque pli
-
-    for fold, (train_idx, val_idx) in enumerate(skf.split(X_labeled, y_labeled), 1):
-        # Diviser les données en sous-ensembles d'entraînement et de validation (sur les données étiquetées de base)
-        X_train, X_val = X_labeled[train_idx], X_labeled[val_idx]
-        y_train, y_val = y_labeled[train_idx], y_labeled[val_idx]
-
-        # Cloner le modèle de self-training (pour éviter de réentraîner le modèle pendant la validation croisée)
-        model_clone = clone(model)
-
-        # Entraîner le modèle cloné sur les données d'entraînement du pli
-        model_clone.fit(X_train, y_train)
-
-        # Prédictions et évaluation sur l'ensemble de validation
-        y_pred = model_clone.predict(X_val)
-        accuracy = accuracy_score(y_val, y_pred)
-        conf_matrix = confusion_matrix(y_val, y_pred)
-
-        # Stocker les résultats pour ce pli
-        results.append({
-            'fold': fold,
-            'y_true': y_val,
-            'y_pred': y_pred,
-            'conf_matrix': conf_matrix,
-            'accuracy': accuracy
-        })
-        models.append(model_clone)
-
-        print(f"Pli {fold} - Accuracy : {accuracy:.4f}")
-
-    return results, models
-
-
-def visualize_results(results, n_classes, class_names):
-    """Visualiser les matrices de confusion et les précisions."""
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    axes = axes.flatten()
-
-    # Tracer les matrices individuelles pour chaque pli
-    global_matrix = np.zeros((n_classes, n_classes))
-    for i, result in enumerate(results):
-        if i < 5:  # Tracer les 5 premiers plis seulement
-            sns.heatmap(result['conf_matrix'], annot=True, fmt='d', cmap='Blues',
-                        xticklabels=class_names, yticklabels=class_names, ax=axes[i], cbar=False)
-            axes[i].set_title(f"Pli {i + 1} (Accuracy : {result['accuracy']:.3f})")
-        global_matrix += result['conf_matrix']
-
-    # Tracer la matrice globale
-    sns.heatmap(global_matrix, annot=True, fmt='.1f', cmap='Blues', xticklabels=class_names, yticklabels=class_names,
-                ax=axes[-1], cbar=True)
-    axes[-1].set_title(f"Global (Accuracy moyenne : {np.mean([r['accuracy'] for r in results]):.3f})")
-
-    plt.tight_layout()
-    plt.savefig('cv_conf_matrices_logistic_self.png')
-    plt.close()
-
-
-def evaluate_final_performance(y_test, y_pred, class_names):
-    """Évaluer la performance finale avec plusieurs métriques."""
-    print("\nPerformance finale sur le jeu de test :")
-    print("-" * 50)
-    print(f"Accuracy : {accuracy_score(y_test, y_pred):.4f}")
-    print("\nRapport de classification :")
-    print(classification_report(y_test, y_pred))
-    print("\nMatrice de confusion :")
-    conf_mat = confusion_matrix(y_test, y_pred)
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(conf_mat, annot=True, fmt='d', cmap='Blues', xticklabels=class_names, yticklabels=class_names,)
-    plt.title('Matrice de confusion - Jeu de test')
-    plt.savefig('test_confusion_matrix_logistic_self.png')
-    plt.close()
-    print("\nMatrice de confusion enregistrée dans test_confusion_matrix_logistic_self.png")
-
-
-# Exécution principale
-n_neighbors = 5
-X_train, X_test, y_train, y_test, X_unlabeled, class_names = load_and_scale_data()
-# Validation croisée sur les données d'entraînement
-results, models = cross_validate_self_training(X_train, y_train, X_unlabeled)
-
-visualize_results(results, len(np.unique(y_train)), class_names)
-
-# Sélectionner le dernier modèle cloné
-final_model = models[-1]
-
-# Prédictions sur le jeu de test
-y_pred = final_model.predict(X_test)
-
-# Évaluation finale sur le jeu de test
-evaluate_final_performance(y_test, y_pred, class_names)
