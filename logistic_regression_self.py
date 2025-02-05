@@ -114,70 +114,57 @@ for fold, (train_index, val_index) in enumerate(skf.split(D_a_balanced, y_a_bala
     validation_scores.append(score)
     print(f'Score de validation : {score}')
 
+    # Affichage du classification_report pour chaque pli
+    report = classification_report(y_a_val, y_val_pred, target_names=class_names)
+    print(f"\nClassification Report pour le pli {fold} :")
+    print(report)
+
     # Matrice de confusion
     cm = confusion_matrix(y_a_val, y_val_pred)
     fold_cms.append(cm)
 
+    # Préparation des données pour TSNE
+    D_all = np.vstack((D_a_train, D_u_current))  # Toutes les données (étiquetées + non étiquetées)
+    y_all = np.concatenate((y_a_train, np.full(D_u_current.shape[0], 4)))  # Étiquettes (4 = non étiquetées)
+
+    # Transformation TSNE
+    tsne = TSNE(n_components=2, random_state=42)
+    D_2D = tsne.fit_transform(D_all)
+
+    # Scatter plot TSNE
+    plt.figure(figsize=(12, 8))
+    sns.scatterplot(x=D_2D[:, 0], y=D_2D[:, 1], hue=y_all, palette='tab10', legend='full')
+    plt.title(f"t-SNE des données (pli {fold}) avec pseudo-labels logreg")
+    plt.savefig(f"tsne_pseudo_labels_fold_{fold}_logreg.png", dpi=300)
+    plt.close()
+
+    mask = y_all != 4
+    D_filtered = D_all[mask]
+    labels_filtered = y_all[mask]
+
+    tsne = TSNE(n_components=2, random_state=42)
+    D_2D_filtered = tsne.fit_transform(D_filtered)
+
+    plt.figure(figsize=(12, 8))
+    sns.scatterplot(x=D_2D_filtered[:, 0], y=D_2D_filtered[:, 1], hue=labels_filtered, palette='tab10',
+                    legend='full')
+    plt.title(f"t-SNE des données (pli {fold}) sans la classe 0")
+    plt.savefig(f"tsne_pseudo_labels_fold_{fold}_filtered_logreg.png", dpi=300)
+    plt.close()
+
+    # Visualisation t-SNE des données annotées initiales
+    tsne = TSNE(n_components=2, random_state=42)
+    D_a_2D = tsne.fit_transform(D_a)
+
+    plt.figure(figsize=(12, 8))
+    sns.scatterplot(x=D_a_2D[:, 0], y=D_a_2D[:, 1], hue=y_a, palette='tab10', legend='full')
+    plt.title("t-SNE of labeled data")
+    plt.savefig(f"tsne_labeled_datalogreg{fold}.png", dpi=300)
+    plt.close()
+
 # Résultats finaux
 print(f"Scores de validation : {validation_scores}")
 print(f"Score moyen : {np.mean(validation_scores)}")
-
-# Trouver l'indice du pli avec le meilleur score de validation
-best_fold_idx = np.argmax(validation_scores)
-best_validation_score = validation_scores[best_fold_idx]
-print(f"\nMeilleur score de validation : {best_validation_score} (Pli {best_fold_idx + 1})")
-
-# Récupérer les données et les prédictions pour le meilleur pli
-best_fold_train_index, best_fold_val_index = list(skf.split(D_a_balanced, y_a_balanced))[best_fold_idx]
-D_a_train_best, D_a_val_best = D_a_balanced[best_fold_train_index], D_a_balanced[best_fold_val_index]
-y_a_train_best, y_a_val_best = y_a_balanced[best_fold_train_index], y_a_balanced[best_fold_val_index]
-
-best_self_training_model = clone(model)
-
-# Processus d'apprentissage automatique
-for iteration in range(max_iterations):
-    print(f"\n--- Itération {iteration + 1} ---")
-
-    # Entraînement du modèle
-    best_self_training_model.fit(D_a_train_best, y_a_train_best)
-
-    # Prédictions et confidences
-    pseudo_labels_best = best_self_training_model.predict(D_u)
-    confidences_best = best_self_training_model.predict_proba(D_u).max(axis=1)
-
-    # Filtrage des données à haute confiance
-    high_confidence_mask_best = confidences_best > confidence_threshold
-    D_u_high_conf_best = D_u[high_confidence_mask_best]
-    pseudo_labels_high_conf_best = pseudo_labels_best[high_confidence_mask_best]
-
-    # if len(D_u_high_conf_best) > batch_size:
-    #    D_u_high_conf_best = D_u_high_conf_best[:batch_size]
-    #    pseudo_labels_high_conf_best = pseudo_labels_high_conf_best[:batch_size]
-
-    # Mise à jour des données d'entraînement
-    D_a_train_best = np.concatenate([D_a_train_best, D_u_high_conf_best])
-    y_a_train_best = np.concatenate([y_a_train_best, pseudo_labels_high_conf_best])
-
-    # Mise à jour des données non étiquetées
-    D_u = D_u[~high_confidence_mask_best]
-
-    # Journalisation
-    print(f"Données étiquetées après itération : {len(D_a_train_best)}")
-    print(f"Données non étiquetées restantes : {len(D_u)}")
-    print(f"Données ajoutées à haute confiance : {len(D_u_high_conf_best)}")
-
-    # Arrêt si aucune nouvelle donnée n'est ajoutée
-    if len(D_u_high_conf_best) == 0:
-        print("Aucune nouvelle donnée n'a été ajoutée. Arrêt du self-training.")
-        break
-
-# Prédictions du modèle sur les données de validation
-y_val_pred_best = best_self_training_model.predict(D_a_val_best)
-
-# Affichage du classification_report pour le meilleur pli
-report = classification_report(y_a_val_best, y_val_pred_best, target_names=class_names)
-print("\nClassification Report pour le meilleur pli :")
-print(report)
 
 # Visualisation des matrices de confusion
 plt.figure(figsize=(20, 15))
@@ -210,38 +197,6 @@ plt.ylabel('Vraies valeurs')
 
 plt.tight_layout()
 plt.savefig('cv_conf_matrices_logreg.png', dpi=300)
-plt.close()
-
-# Ajout de la visualisation TSNE globale
-#D_combined = np.concatenate([D_a_balanced, D_u])
-#labels_combined = np.concatenate([y_a_balanced, np.full(len(D_u), -1)])  # -1 pour différencier les pseudo-labels
-
-selected_classes = [0, 1, 2]
-mask = np.isin(y_a_train_best, selected_classes)
-
-D_filtered = D_a_train_best[mask]
-labels_filtered = y_a_train_best[mask]
-
-# Réduction de dimension avec TSNE
-tsne = TSNE(n_components=2, random_state=42)
-D_2D = tsne.fit_transform(D_a_train_best)
-
-# Création du scatter plot
-plt.figure(figsize=(12, 8))
-sns.scatterplot(x=D_2D[:, 0], y=D_2D[:, 1], hue=y_a_train_best, palette='Set1', legend='full')
-plt.title("t-SNE des données avec pseudo-labels LOGREG with basic threshold")
-plt.savefig("tsne_pseudo_labels_global.png", dpi=300)
-plt.close()
-
-# Réduction de dimension avec TSNE
-tsne = TSNE(n_components=2, random_state=42)
-D_2D = tsne.fit_transform(D_filtered)
-
-# Création du scatter plot
-plt.figure(figsize=(12, 8))
-sns.scatterplot(x=D_2D[:, 0], y=D_2D[:, 1], hue=labels_filtered, palette='Set1', legend='full')
-plt.title("t-SNE des données avec pseudo-labels LOGREG with basic threshold (class 0 to 2")
-plt.savefig("tsne_pseudo_labels_filtered.png", dpi=300)
 plt.close()
 
 

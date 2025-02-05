@@ -2,7 +2,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.base import clone
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.pipeline import Pipeline
-from sklearn.neighbors import KNeighborsClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.calibration import CalibratedClassifierCV
 from imblearn.over_sampling import SMOTE
@@ -25,7 +25,6 @@ D_u = unlabeled_data['X_unlabeled']
 # Paramètres
 max_iterations = 5
 n_folds = 3
-k = 5
 skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
 
 # Équilibrage des classes
@@ -37,15 +36,13 @@ elif balancing_strategy == 'undersampling':
 
 D_a_balanced, y_a_balanced = sampler.fit_resample(D_a, y_a)
 
-print(f"Classes uniques avant équilibrage : {np.unique(y_a)}")
-print(f"Distribution avant équilibrage : {dict(zip(*np.unique(y_a, return_counts=True)))}")
-print(f"Classes uniques après équilibrage : {np.unique(y_a_balanced)}")
-print(f"Distribution après équilibrage : {dict(zip(*np.unique(y_a_balanced, return_counts=True)))}")
+# Initialisation du modèle
+base_model = Pipeline([
+    ('scaler', StandardScaler()),
+    ('classifier', LogisticRegression(max_iter=1000, random_state=42))
+])
 
-for label, name in enumerate(class_names):
-    print(f"Classe : {label} : {name}")
-
-
+# Classe AdaMatchSelfTraining avec Logistic Regression
 class AdaMatchSelfTraining:
     def __init__(self, base_model, confidence_threshold=0.8, max_iterations=10, alpha=0.5):
         self.model = clone(base_model)
@@ -89,7 +86,7 @@ class AdaMatchSelfTraining:
             print(f"Données non étiquetées restantes : {len(D_u_current)}")
             print(f"Données ajoutées à haute confiance : {len(D_u_high_conf)}")
 
-            # Arrêt si aucune nouvelle donnée n'est ajoutée
+            # Arrêt si aucune nouvelle donnée n'a été ajoutée
             if len(D_u_high_conf) == 0:
                 print("Aucune nouvelle donnée n'a été ajoutée. Arrêt du self-training.")
                 break
@@ -104,12 +101,6 @@ class AdaMatchSelfTraining:
 
 validation_scores = []
 fold_cms = []
-
-# Initialisation du modèle avec AdaMatch
-base_model = Pipeline([
-    ('scaler', StandardScaler()),
-    ('classifier', KNeighborsClassifier(n_neighbors=k))
-])
 
 for fold, (train_index, val_index) in enumerate(skf.split(D_a_balanced, y_a_balanced), 1):
     print(f"\n--- Fold {fold} ---")
@@ -164,8 +155,8 @@ for fold, (train_index, val_index) in enumerate(skf.split(D_a_balanced, y_a_bala
     # Scatter plot TSNE
     plt.figure(figsize=(12, 8))
     sns.scatterplot(x=D_2D[:, 0], y=D_2D[:, 1], hue=y_all, palette='tab10', legend='full')
-    plt.title(f"t-SNE des données (pli {fold}) avec pseudo-labels KNN + AdaMatch")
-    plt.savefig(f"tsne_pseudo_labels_fold_{fold}_AdaMatchKNN.png", dpi=300)
+    plt.title(f"t-SNE des données (pli {fold}) avec pseudo-labels Logistic Regression + AdaMatch")
+    plt.savefig(f"tsne_pseudo_labels_fold_{fold}_AdaMatchLogReg.png", dpi=300)
     plt.close()
 
     mask = y_all != 4
@@ -177,8 +168,8 @@ for fold, (train_index, val_index) in enumerate(skf.split(D_a_balanced, y_a_bala
 
     plt.figure(figsize=(12, 8))
     sns.scatterplot(x=D_2D_filtered[:, 0], y=D_2D_filtered[:, 1], hue=labels_filtered, palette='tab10', legend='full')
-    plt.title(f"t-SNE des données (pli {fold}) sans la classe 0")
-    plt.savefig(f"tsne_pseudo_labels_fold_{fold}_filtered_AdaMatchKNN.png", dpi=300)
+    plt.title(f"t-SNE des données (pli {fold}) sans la classe 4")
+    plt.savefig(f"tsne_pseudo_labels_fold_{fold}_filtered_AdaMatchLogReg.png", dpi=300)
     plt.close()
 
     # Visualisation t-SNE des données annotées initiales
@@ -188,7 +179,7 @@ for fold, (train_index, val_index) in enumerate(skf.split(D_a_balanced, y_a_bala
     plt.figure(figsize=(12, 8))
     sns.scatterplot(x=D_a_2D[:, 0], y=D_a_2D[:, 1], hue=y_a, palette='tab10', legend='full')
     plt.title("t-SNE of labeled data")
-    plt.savefig(f"tsne_labeled_data_AdaMatchKNN{fold}.png", dpi=300)
+    plt.savefig(f"tsne_labeled_data_AdaMatchlogreg{fold}.png", dpi=300)
     plt.close()
 
 # Résultats finaux
@@ -225,5 +216,5 @@ plt.xlabel('Prédictions')
 plt.ylabel('Vraies valeurs')
 
 plt.tight_layout()
-plt.savefig('cv_conf_matrices_knn_AdaMatch.png', dpi=300)
+plt.savefig('cv_conf_matrices_logreg_AdaMatch.png', dpi=300)
 plt.close()
